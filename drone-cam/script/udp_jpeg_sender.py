@@ -1,6 +1,7 @@
 import socket
 import struct
 import sys
+import time
 
 import cv2
 
@@ -72,6 +73,7 @@ for chunk_id in range(total_chunks):
     packet = header + chunk
 
     sock.sendto(packet, (gcs_ip, gcs_port))
+    time.sleep(0.01)
 
 print("JPEG berhasil dikirimkan melaulai UDP")
 
