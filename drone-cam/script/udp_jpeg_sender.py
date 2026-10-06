@@ -5,12 +5,13 @@ import sys
 import cv2
 
 # network configuration
-gcs_ip = "10.42.0.1"
+# gcs_ip = "10.42.0.1"
+gcs_ip = "192.168.137.1"  ## sesuaikan dengan IP GCS
 gcs_port = 5001
 chunk_size = 1200
 
 # open camera
-camera = cv2.VideoCapture(1)
+camera = cv2.VideoCapture(0)
 
 if not camera.isOpened():
     print("Gagal membuka camera")
