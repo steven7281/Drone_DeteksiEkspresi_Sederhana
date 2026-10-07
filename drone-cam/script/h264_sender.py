@@ -4,7 +4,7 @@ import sys
 import cv2
 
 # GCS_IP = "192.168.137.1"
-GCS_IP = "192.168.110.167"
+GCS_IP = "192.168.137.1"
 GCS_PORT = 5001
 
 FPS = 20
