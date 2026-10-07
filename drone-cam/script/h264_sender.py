@@ -8,8 +8,8 @@ GCS_IP = "192.168.137.1"
 GCS_PORT = 5001
 
 FPS = 20
-WIDTH = 480
-HEIGHT = 360
+WIDTH = 640
+HEIGHT = 480
 
 camera = cv2.VideoCapture(0)
 
@@ -20,6 +20,7 @@ if not camera.isOpened():
 camera.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
 camera.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
 camera.set(cv2.CAP_PROP_FPS, FPS)
+camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
 ret, frame = camera.read()
 
@@ -48,20 +49,30 @@ ffmpeg_command = [
     str(FPS),
     "-i",
     "-",
-    # H.264 encoder
+    # H.264 encoder (GPU NVENC)
     "-c:v",
-    "libx264",
+    "h264_nvenc",
     "-preset",
-    "ultrafast",
+    "p1",
     "-tune",
-    "zerolatency",
+    "ll",
+    "-bf",
+    "0",
+    "-g",
+    "20",
+    "-rc",
+    "cbr",
     # Video format
     "-pix_fmt",
     "yuv420p",
     # Bitrate
     "-b:v",
-    "1M",
-    # MPEG-TS melalui UDP
+    "1.5M",
+    "-maxrate",
+    "1.5M",
+    # MPEG-TS melalui UDP, flush tiap paket agar delay kecil
+    "-flush_packets",
+    "1",
     "-f",
     "mpegts",
     f"udp://{GCS_IP}:{GCS_PORT}?pkt_size=1316",
@@ -92,14 +103,10 @@ try:
 
         # Kirim raw frame ke FFmpeg
         encoder.stdin.write(frame.tobytes())
+        encoder.stdin.flush()
 
-        # Preview lokal
-        cv2.imshow("Drone Camera - H264 Sender", frame)
-
-        key = cv2.waitKey(1) & 0xFF
-
-        if key == ord("q"):
-            break
+        # Preview lokal dimatikan agar sender tidak lag
+        # (tekan Ctrl+C untuk berhenti)
 
 except BrokenPipeError:
     print("FFmpeg encoder berhenti.")

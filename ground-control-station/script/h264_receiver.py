@@ -1,64 +1,71 @@
 import os
 import subprocess
 import sys
+import threading
 import time
+from collections import deque
 
 import cv2
 import numpy as np
 
-HOST = "0.0.0.0"
-PORT = 5001
-
-WIDTH = 480
-HEIGHT = 360
-
-FRAME_SIZE = WIDTH * HEIGHT * 3
-
-_AI_DIR = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "AI")
-)
-sys.path.insert(0, _AI_DIR)
-
-from model_runner import FaceTracker, SCRFDFaceDetector, load_model
-
-MODEL_DIR = os.path.normpath(
-    os.path.join(_AI_DIR, "model", "mobilenetv3_small")
+# add ground-control-station/AI ke python path
+sys.path.insert(
+    0,
+    os.path.abspath(
+        os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "AI",
+        )
+    ),
 )
 
+from model_runner import SCRFDFaceDetector
 
-def install_model():
-    """Unduh & ekspor MobileNetV3 small ke AI/model/mobilenetv3_small/."""
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    out_path = os.path.join(MODEL_DIR, "mobilenetv3_small.tflite")
+# network configuration
+gcs_ip = "0.0.0.0"
+gcs_port = 5001
 
-    if os.path.exists(out_path):
-        return out_path
+# video configuration
+width = 640
+height = 480
+frame_size = width * height * 3
 
-    try:
-        import tensorflow as tf
-    except ImportError:
-        print("ERROR: tensorflow belum terinstal. Jalankan: pip install tensorflow")
-        return None
-
-    print("Mengunduh & mengekspor model MobileNetV3 small...")
-    model = tf.keras.applications.MobileNetV3Small(
-        input_shape=(224, 224, 3), include_top=True, weights="imagenet"
+# model configuration
+model_path = os.path.abspath(
+    os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "AI",
+        "model",
+        "scrfd_2.5g_bnkps",
+        "scrfd_2.5g_kps.onnx",
     )
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
-    with open(out_path, "wb") as f:
-        f.write(converter.convert())
-    print(f"Model disimpan: {out_path}")
-    return out_path
+)
 
+detector = SCRFDFaceDetector(model_path, input_size=256)
 
+print("SCRFD detector berhasil dibuat")
+
+# ffmpeg configuration
 ffmpeg_command = [
     "ffmpeg",
     "-fflags",
-    "nobuffer",
+    "nobuffer+discardcorrupt+genpts",
     "-flags",
     "low_delay",
+    "-analyzeduration",
+    "0",
+    "-probesize",
+    "32",
+    "-max_delay",
+    "0",
+    "-hwaccel",
+    "cuda",
+    "-c:v",
+    "h264_cuvid",
     "-i",
-    f"udp://{HOST}:{PORT}?fifo_size=1000000&overrun_nonfatal=1",
+    f"udp://{gcs_ip}:{gcs_port}?fifo_size=1000000&overrun_nonfatal=1",
     "-f",
     "rawvideo",
     "-pix_fmt",
@@ -66,90 +73,177 @@ ffmpeg_command = [
     "pipe:1",
 ]
 
-print(f"Listening H.264 UDP on {HOST}:{PORT}")
-
 try:
     decoder = subprocess.Popen(
-        ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**8
+        ffmpeg_command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        bufsize=10**8,
     )
 except FileNotFoundError:
-    print("ERROR: FFmpeg tidak ditemukan.")
-    sys.exit(1)
+    print("ERROR: FFmpeg tidak ditemukan")
+    print("Pastikan command 'ffmpeg' tersedia di terminal")
+    sys.exit()
 
-cv2.namedWindow("GCS - H264 Drone Camera", cv2.WINDOW_NORMAL)
-cv2.resizeWindow("GCS - H264 Drone Camera", WIDTH, HEIGHT)
+print(f"Listening H.264 UDP on {gcs_ip}:{gcs_port}")
+print("Menunggu video dari drone...")
+print("Tekan Q untuk keluar")
 
-detector, model_path = load_model()
-if detector is None:
-    print("Model belum ada, menjalankan proses install model...")
-    install_model()
-    detector, model_path = load_model()
+latest_frame = None
+latest_frame_time = None
 
-if detector is None:
-    print("WARN: Model tidak ditemukan di AI/model/mobilenetv3_small/. Inferensi di-skip.")
-else:
-    print(f"Model dimuat: {model_path}")
+frame_lock = threading.Lock()
+stop_event = threading.Event()
 
-_SCRFD_PATH = os.path.normpath(
-    os.path.join(_AI_DIR, "model", "scrfd", "det_500m.onnx")
-)
+received_frames = 0
+processed_frames = 0
 
-if os.path.exists(_SCRFD_PATH):
-    face_tracker = SCRFDFaceDetector(_SCRFD_PATH, input_size=320)
-    print(f"Face tracker siap (SCRFD): {_SCRFD_PATH}")
-else:
-    face_tracker = FaceTracker()
-    print("SCRFD tidak ditemukan, fallback ke Haar Cascade.")
+received_frame_lock = threading.Lock()
+processed_frame_lock = threading.Lock()
 
-try:
-    while True:
-        raw_frame = decoder.stdout.read(FRAME_SIZE)
+inference_times = deque(maxlen=100)
 
-        if len(raw_frame) != FRAME_SIZE:
-            print("Frame tidak lengkap atau stream berhenti.")
+
+def receive_frames():
+    global latest_frame
+    global latest_frame_time
+    global received_frames
+
+    while not stop_event.is_set():
+        raw_frame = decoder.stdout.read(frame_size)
+
+        if len(raw_frame) != frame_size:
+            print("Frame tidak lengkap atau stream berhenti")
+            stop_event.set()
             break
 
-        frame = np.frombuffer(raw_frame, dtype=np.uint8).reshape((HEIGHT, WIDTH, 3)).copy()
+        frame = np.frombuffer(
+            raw_frame,
+            dtype=np.uint8,
+        ).reshape(
+            (height, width, 3)
+        ).copy()
 
-        t0 = time.perf_counter()
-        faces = face_tracker.run(frame)
-        t1 = time.perf_counter()
-        face_ms = (t1 - t0) * 1000.0
+        with frame_lock:
+            latest_frame = frame
+            latest_frame_time = time.perf_counter()
+
+        with received_frame_lock:
+            received_frames += 1
+
+
+receiver_thread = threading.Thread(
+    target=receive_frames,
+    daemon=True,
+)
+
+receiver_thread.start()
+
+last_report_time = time.perf_counter()
+last_received_frames = 0
+last_processed_frames = 0
+
+try:
+    while not stop_event.is_set():
+
+        with frame_lock:
+            if latest_frame is None:
+                frame = None
+                frame_time = None
+            else:
+                frame = latest_frame.copy()
+                frame_time = latest_frame_time
+
+        if frame is None:
+            time.sleep(0.001)
+            continue
+
+        frame_age = (time.perf_counter() - frame_time) * 1000
+
+        start_time = time.perf_counter()
+
+        if processed_frames % 2 == 0:
+            last_faces = detector.run(frame)
+        faces = last_faces
+
+        inference_time = (time.perf_counter() - start_time) * 1000
+        inference_times.append(inference_time)
+
+        with processed_frame_lock:
+            processed_frames += 1
 
         for (x, y, w, h) in faces:
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            cv2.putText(
+                frame,
+                "face",
+                (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 0),
+                2,
+            )
 
         cv2.putText(
             frame,
-            f"Face: {len(faces)} | {face_ms:.1f} ms",
-            (10, 60),
+            f"scrfd: {inference_time:.1f} ms",
+            (10, 25),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
+            0.6,
             (0, 255, 255),
             2,
-            cv2.LINE_AA,
         )
-        print(f"Face detection: {len(faces)} wajah | {face_ms:.1f} ms")
 
-        if detector is not None:
-            t0 = time.perf_counter()
-            detector.run(frame)
-            t1 = time.perf_counter()
-            infer_ms = (t1 - t0) * 1000.0
+        cv2.putText(
+            frame,
+            f"frame age: {frame_age:.1f} ms",
+            (10, 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 255),
+            2,
+        )
 
-            cv2.putText(
-                frame,
-                f"Inference: {infer_ms:.1f} ms",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 255, 0),
-                2,
-                cv2.LINE_AA,
+        cv2.imshow(
+            "GCS - H264 Drone Camera",
+            frame,
+        )
+
+        current_time = time.perf_counter()
+
+        if current_time - last_report_time >= 1.0:
+
+            elapsed_time = current_time - last_report_time
+
+            with received_frame_lock:
+                current_received_frames = received_frames
+
+            with processed_frame_lock:
+                current_processed_frames = processed_frames
+
+            received_fps = (
+                current_received_frames - last_received_frames
+            ) / elapsed_time
+
+            processed_fps = (
+                current_processed_frames - last_processed_frames
+            ) / elapsed_time
+
+            if len(inference_times) > 0:
+                average_inference = sum(inference_times) / len(inference_times)
+            else:
+                average_inference = 0.0
+
+            print(
+                f"received fps: {received_fps:.1f} | "
+                f"processed fps: {processed_fps:.1f} | "
+                f"SCRFD: {average_inference:.1f} ms | "
+                f"frame age: {frame_age:.1f} ms"
             )
-            print(f"Inference: {infer_ms:.1f} ms")
 
-        cv2.imshow("GCS - H264 Drone Camera", frame)
+            last_received_frames = current_received_frames
+            last_processed_frames = current_processed_frames
+            last_report_time = current_time
 
         key = cv2.waitKey(1) & 0xFF
 
@@ -157,12 +251,14 @@ try:
             break
 
 except KeyboardInterrupt:
-    print("\nReceiver dihentikan.")
+    print("\nTest dihentikan")
 
 finally:
+    stop_event.set()
+
     decoder.terminate()
     decoder.wait()
 
     cv2.destroyAllWindows()
 
-    print("H.264 receiver berhenti.")
+    print("GCS - H264 Drone Camera selesai")

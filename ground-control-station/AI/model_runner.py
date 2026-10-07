@@ -1,10 +1,7 @@
-"""Loader + runner model AI untuk GCS.
+"""Loader + runner model AI untuk GCS (full GPU via ONNX Runtime).
 
-Model diambil dari folder:
-    AI/model/<namaModel>/
-
-h264_receiver.py hanya memanggil load_model() dan run() dari modul ini —
-logika pemanggilan model tidak ditulis di script receiver.
+- SCRFD (deteksi wajah) via onnxruntime CUDA
+- MobileNetV3 small (.onnx) via onnxruntime CUDA
 """
 
 import os
@@ -12,12 +9,27 @@ import os
 import cv2
 import numpy as np
 
+# pastikan DLL CUDA/cuDNN dari paket pip nvidia-* bisa ditemukan
+_NV_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(cv2.__file__))),
+    "nvidia",
+)
+for _sub in ["cudnn", "cublas", "cuda_runtime", "cufft", "nvjitlink"]:
+    _bin = os.path.join(_NV_DIR, _sub, "bin")
+    if os.path.isdir(_bin) and hasattr(os, "add_dll_directory"):
+        try:
+            os.add_dll_directory(_bin)
+        except OSError:
+            pass
+    if os.path.isdir(_bin) and _bin not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = _bin + os.pathsep + os.environ.get("PATH", "")
+
 AI_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_ROOT = os.path.join(AI_DIR, "model")
 MODEL_NAME = "mobilenetv3_small"
 MODEL_DIR = os.path.join(MODEL_ROOT, MODEL_NAME)
 
-MODEL_EXTENSIONS = [".tflite", ".onnx", ".h5", ".keras", ".pt", ".pth"]
+MODEL_EXTENSIONS = [".onnx"]
 
 
 def find_model_file():
@@ -40,67 +52,18 @@ def _preprocess(frame):
 
 class ModelRunner:
     def __init__(self, model_path):
-        self.model_path = model_path
-        self.kind = None
-        self.model = None
-        self._load()
+        import onnxruntime as ort
 
-    def _load(self):
-        ext = os.path.splitext(self.model_path)[1].lower()
-
-        if ext == ".tflite":
-            import tensorflow as tf
-
-            interpreter = tf.lite.Interpreter(model_path=self.model_path)
-            interpreter.allocate_tensors()
-            self.kind, self.model = "tflite", interpreter
-
-        elif ext == ".onnx":
-            self.kind, self.model = "onnx", cv2.dnn.readNetFromONNX(self.model_path)
-
-        elif ext in (".h5", ".keras"):
-            import tensorflow as tf
-
-            self.kind, self.model = "keras", tf.keras.models.load_model(self.model_path)
-
-        elif ext in (".pt", ".pth"):
-            import torch
-            from torchvision import models
-
-            model = models.mobilenet_v3_small(weights=None)
-            state = torch.load(self.model_path, map_location="cpu")
-            if isinstance(state, dict) and "state_dict" in state:
-                state = state["state_dict"]
-            model.load_state_dict(state)
-            model.eval()
-            self.kind, self.model = "torch", model
+        self.model = ort.InferenceSession(
+            model_path,
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        )
+        print("MobileNetV3 providers:", self.model.get_providers())
 
     def run(self, frame):
         img = _preprocess(frame)
-
-        if self.kind == "tflite":
-            inp = self.model.get_input_details()
-            out = self.model.get_output_details()
-            self.model.set_tensor(inp[0]["index"], np.expand_dims(img.astype(inp[0]["dtype"]), 0))
-            self.model.invoke()
-            return self.model.get_tensor(out[0]["index"])
-
-        if self.kind == "onnx":
-            blob = cv2.dnn.blobFromImage(img, scalefactor=1.0, size=(224, 224), swapRB=False, crop=False)
-            self.model.setInput(blob)
-            return self.model.forward()
-
-        if self.kind == "keras":
-            return self.model.predict(np.expand_dims(img, 0), verbose=0)
-
-        if self.kind == "torch":
-            import torch
-
-            tensor = torch.from_numpy(img.transpose(2, 0, 1)).unsqueeze(0).float()
-            with torch.no_grad():
-                return self.model(tensor).numpy()
-
-        return None
+        inp = np.expand_dims(img, 0).astype(np.float32)
+        return self.model.run(None, {self.model.get_inputs()[0].name: inp})
 
 
 def load_model():
@@ -110,37 +73,17 @@ def load_model():
     return ModelRunner(path), path
 
 
-class FaceTracker:
-    """Deteksi wajah dengan Haar Cascade bawaan OpenCV (offline, tanpa download)."""
-
-    def __init__(self):
-        cascade_path = os.path.join(
-            cv2.data.haarcascades, "haarcascade_frontalface_default.xml"
-        )
-        self.cascade = cv2.CascadeClassifier(cascade_path)
-        if self.cascade.empty():
-            raise RuntimeError(f"Gagal memuat cascade: {cascade_path}")
-
-    def run(self, frame):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = self.cascade.detectMultiScale(
-            gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
-        )
-        return faces
-
-
 class SCRFDFaceDetector:
-    """Deteksi wajah dengan SCRFD (det_10g.onnx) via OpenCV DNN.
-
-    Menggantikan FaceTracker/Haar — lebih akurat untuk wajah kecil/miring.
-    """
+    """Deteksi wajah dengan SCRFD (.onnx) via onnxruntime CUDA."""
 
     def __init__(self, model_path, input_size=640, conf_thres=0.5, nms_thres=0.4):
         import onnxruntime as ort
 
         self.session = ort.InferenceSession(
-            model_path, providers=["CPUExecutionProvider"]
+            model_path,
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
         )
+        print("SCRFD providers:", self.session.get_providers())
         self.input_name = self.session.get_inputs()[0].name
         self.input_size = input_size
         self.conf_thres = conf_thres

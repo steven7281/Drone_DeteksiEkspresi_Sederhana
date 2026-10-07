@@ -20,8 +20,8 @@ model_path = os.path.abspath(
         "..",
         "AI",
         "model",
-        "scrfd",
-        "det_500m.onnx",
+        "scrfd_2.5g_bnkps",
+        "scrfd_2.5g_kps.onnx",
     )
 )
 

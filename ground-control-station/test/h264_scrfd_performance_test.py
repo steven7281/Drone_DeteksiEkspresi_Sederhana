@@ -27,8 +27,8 @@ gcs_ip = "0.0.0.0"
 gcs_port = 5001
 
 # video configuration
-width = 480
-height = 360
+width = 640
+height = 480
 frame_size = width * height * 3
 
 # model configuration
@@ -38,8 +38,8 @@ model_path = os.path.abspath(
         "..",
         "AI",
         "model",
-        "scrfd",
-        "det_500m.onnx",
+        "scrfd_2.5g_bnkps",
+        "scrfd_2.5g_kps.onnx",
     )
 )
 
@@ -51,9 +51,19 @@ print("SCRFD detector berhasil dibuat")
 ffmpeg_command = [
     "ffmpeg",
     "-fflags",
-    "nobuffer",
+    "nobuffer+discardcorrupt+genpts",
     "-flags",
     "low_delay",
+    "-analyzeduration",
+    "0",
+    "-probesize",
+    "32",
+    "-max_delay",
+    "0",
+    "-hwaccel",
+    "cuda",
+    "-c:v",
+    "h264_cuvid",
     "-i",
     f"udp://{gcs_ip}:{gcs_port}?fifo_size=1000000&overrun_nonfatal=1",
     "-f",
