@@ -163,7 +163,17 @@ try:
         start_time = time.perf_counter()
 
         if processed_frames % 2 == 0:
-            last_faces = detector.run(frame)
+            try:
+                last_faces = detector.run(frame)
+            except Exception as e:
+                print(f"Deteksi gagal ({e}), fallback ke CPU...")
+                detector = SCRFDFaceDetector(
+                    model_path,
+                    input_size=256,
+                    providers=["CPUExecutionProvider"],
+                )
+                print("SCRFD providers:", detector.session.get_providers())
+                last_faces = detector.run(frame)
         faces = last_faces
 
         inference_time = (time.perf_counter() - start_time) * 1000

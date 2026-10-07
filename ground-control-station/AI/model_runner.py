@@ -76,12 +76,21 @@ def load_model():
 class SCRFDFaceDetector:
     """Deteksi wajah dengan SCRFD (.onnx) via onnxruntime CUDA."""
 
-    def __init__(self, model_path, input_size=640, conf_thres=0.5, nms_thres=0.4):
+    def __init__(self, model_path, input_size=640, conf_thres=0.5, nms_thres=0.4, providers=None):
         import onnxruntime as ort
+
+        if providers is None:
+            providers = [
+                (
+                    "CUDAExecutionProvider",
+                    {"memory_limit": 256 * 1024 * 1024},
+                ),
+                "CPUExecutionProvider",
+            ]
 
         self.session = ort.InferenceSession(
             model_path,
-            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            providers=providers,
         )
         print("SCRFD providers:", self.session.get_providers())
         self.input_name = self.session.get_inputs()[0].name
