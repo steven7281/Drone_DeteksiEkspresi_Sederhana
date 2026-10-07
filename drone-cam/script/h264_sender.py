@@ -49,13 +49,13 @@ ffmpeg_command = [
     str(FPS),
     "-i",
     "-",
-    # H.264 encoder (GPU NVENC)
+    # H.264 encoder (CPU)
     "-c:v",
-    "h264_nvenc",
+    "libx264",
     "-preset",
-    "p1",
+    "ultrafast",
     "-tune",
-    "ll",
+    "zerolatency",
     "-bf",
     "0",
     "-g",

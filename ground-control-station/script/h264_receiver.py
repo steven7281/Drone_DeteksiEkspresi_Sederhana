@@ -43,7 +43,7 @@ model_path = os.path.abspath(
     )
 )
 
-detector = SCRFDFaceDetector(model_path, input_size=256)
+detector = SCRFDFaceDetector(model_path, input_size=224)
 
 print("SCRFD detector berhasil dibuat")
 
@@ -60,10 +60,6 @@ ffmpeg_command = [
     "32",
     "-max_delay",
     "0",
-    "-hwaccel",
-    "cuda",
-    "-c:v",
-    "h264_cuvid",
     "-i",
     f"udp://{gcs_ip}:{gcs_port}?fifo_size=1000000&overrun_nonfatal=1",
     "-f",
@@ -162,18 +158,12 @@ try:
 
         start_time = time.perf_counter()
 
-        if processed_frames % 2 == 0:
+        if processed_frames % 4 == 0:
             try:
                 last_faces = detector.run(frame)
             except Exception as e:
-                print(f"Deteksi gagal ({e}), fallback ke CPU...")
-                detector = SCRFDFaceDetector(
-                    model_path,
-                    input_size=256,
-                    providers=["CPUExecutionProvider"],
-                )
-                print("SCRFD providers:", detector.session.get_providers())
-                last_faces = detector.run(frame)
+                print(f"Deteksi gagal ({e})")
+                last_faces = []
         faces = last_faces
 
         inference_time = (time.perf_counter() - start_time) * 1000

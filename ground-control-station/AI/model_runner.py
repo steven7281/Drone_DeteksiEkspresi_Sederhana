@@ -56,7 +56,7 @@ class ModelRunner:
 
         self.model = ort.InferenceSession(
             model_path,
-            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            providers=["CPUExecutionProvider"],
         )
         print("MobileNetV3 providers:", self.model.get_providers())
 
@@ -80,13 +80,7 @@ class SCRFDFaceDetector:
         import onnxruntime as ort
 
         if providers is None:
-            providers = [
-                (
-                    "CUDAExecutionProvider",
-                    {"gpu_mem_limit": 256 * 1024 * 1024},
-                ),
-                "CPUExecutionProvider",
-            ]
+            providers = ["CPUExecutionProvider"]
 
         self.session = ort.InferenceSession(
             model_path,
