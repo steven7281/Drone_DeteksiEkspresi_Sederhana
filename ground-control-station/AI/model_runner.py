@@ -83,7 +83,7 @@ class SCRFDFaceDetector:
             providers = [
                 (
                     "CUDAExecutionProvider",
-                    {"memory_limit": 256 * 1024 * 1024},
+                    {"gpu_mem_limit": 256 * 1024 * 1024},
                 ),
                 "CPUExecutionProvider",
             ]
