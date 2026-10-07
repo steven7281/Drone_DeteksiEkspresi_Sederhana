@@ -127,3 +127,92 @@ class FaceTracker:
             gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
         )
         return faces
+
+
+class SCRFDFaceDetector:
+    """Deteksi wajah dengan SCRFD (det_10g.onnx) via OpenCV DNN.
+
+    Menggantikan FaceTracker/Haar — lebih akurat untuk wajah kecil/miring.
+    """
+
+    def __init__(self, model_path, input_size=640, conf_thres=0.5, nms_thres=0.4):
+        import onnxruntime as ort
+
+        self.session = ort.InferenceSession(
+            model_path, providers=["CPUExecutionProvider"]
+        )
+        self.input_name = self.session.get_inputs()[0].name
+        self.input_size = input_size
+        self.conf_thres = conf_thres
+        self.nms_thres = nms_thres
+        self._center_cache = {}
+
+    def _anchor_centers(self, height, width, stride):
+        key = (height, width, stride)
+        if key in self._center_cache:
+            return self._center_cache[key]
+        y, x = np.mgrid[0:height, 0:width]
+        centers = np.stack([x, y], axis=-1).astype(np.float32)
+        centers = (centers * stride).reshape(-1, 2)
+        centers = np.repeat(centers, 2, axis=0)  # 2 anchor per lokasi
+        self._center_cache[key] = centers
+        return centers
+
+    def run(self, frame):
+        h0, w0 = frame.shape[:2]
+        scale = self.input_size / max(h0, w0)
+        h1, w1 = int(h0 * scale), int(w0 * scale)
+        resized = cv2.resize(frame, (w1, h1))
+
+        det_img = np.zeros((self.input_size, self.input_size, 3), dtype=np.uint8)
+        det_img[:h1, :w1] = resized
+
+        blob = cv2.dnn.blobFromImage(
+            det_img, 1.0 / 128.0, (self.input_size, self.input_size),
+            (127.5, 127.5, 127.5), swapRB=False,
+        )
+        outputs = self.session.run(None, {self.input_name: blob})
+
+        # outputs dikelompokkan per stride: (scores, bboxes, kps)
+        strides = [8, 16, 32]
+        all_boxes, all_scores = [], []
+
+        for i, stride in enumerate(strides):
+            scores = outputs[i]                # (N,1)
+            bboxes = outputs[i + 3]            # (N,4)
+            feat_h = self.input_size // stride
+            feat_w = self.input_size // stride
+            centers = self._anchor_centers(feat_h, feat_w, stride)
+
+            scores = scores.reshape(-1)
+            keep = np.where(scores > self.conf_thres)[0]
+            if len(keep) == 0:
+                continue
+
+            b = bboxes[keep] * stride
+            c = centers[keep]
+            x1 = c[:, 0] - b[:, 0]
+            y1 = c[:, 1] - b[:, 1]
+            x2 = c[:, 0] + b[:, 2]
+            y2 = c[:, 1] + b[:, 3]
+
+            all_boxes.append(np.stack([x1, y1, x2 - x1, y2 - y1], axis=1))
+            all_scores.append(scores[keep])
+
+        if not all_boxes:
+            return []
+
+        boxes = np.concatenate(all_boxes) / scale
+        scores = np.concatenate(all_scores)
+
+        indices = cv2.dnn.NMSBoxes(
+            boxes.tolist(), scores.tolist(), self.conf_thres, self.nms_thres
+        )
+        faces = []
+        for idx in np.array(indices).flatten():
+            x, y, w, h = boxes[idx].astype(int)
+            x, y = max(0, x), max(0, y)
+            w, h = min(w, w0 - x), min(h, h0 - y)
+            if w > 0 and h > 0:
+                faces.append((x, y, w, h))
+        return faces

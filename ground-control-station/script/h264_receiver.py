@@ -9,8 +9,8 @@ import numpy as np
 HOST = "0.0.0.0"
 PORT = 5001
 
-WIDTH = 640
-HEIGHT = 480
+WIDTH = 480
+HEIGHT = 360
 
 FRAME_SIZE = WIDTH * HEIGHT * 3
 
@@ -19,7 +19,7 @@ _AI_DIR = os.path.normpath(
 )
 sys.path.insert(0, _AI_DIR)
 
-from model_runner import FaceTracker, load_model
+from model_runner import FaceTracker, SCRFDFaceDetector, load_model
 
 MODEL_DIR = os.path.normpath(
     os.path.join(_AI_DIR, "model", "mobilenetv3_small")
@@ -90,8 +90,16 @@ if detector is None:
 else:
     print(f"Model dimuat: {model_path}")
 
-face_tracker = FaceTracker()
-print("Face tracker siap (Haar Cascade).")
+_SCRFD_PATH = os.path.normpath(
+    os.path.join(_AI_DIR, "model", "scrfd", "det_500m.onnx")
+)
+
+if os.path.exists(_SCRFD_PATH):
+    face_tracker = SCRFDFaceDetector(_SCRFD_PATH, input_size=320)
+    print(f"Face tracker siap (SCRFD): {_SCRFD_PATH}")
+else:
+    face_tracker = FaceTracker()
+    print("SCRFD tidak ditemukan, fallback ke Haar Cascade.")
 
 try:
     while True:

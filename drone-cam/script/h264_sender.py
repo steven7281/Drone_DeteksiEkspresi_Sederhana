@@ -8,8 +8,8 @@ GCS_IP = "192.168.137.1"
 GCS_PORT = 5001
 
 FPS = 20
-WIDTH = 640
-HEIGHT = 480
+WIDTH = 480
+HEIGHT = 360
 
 camera = cv2.VideoCapture(0)
 
@@ -60,7 +60,7 @@ ffmpeg_command = [
     "yuv420p",
     # Bitrate
     "-b:v",
-    "2M",
+    "1M",
     # MPEG-TS melalui UDP
     "-f",
     "mpegts",
